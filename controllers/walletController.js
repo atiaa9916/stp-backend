@@ -35,82 +35,51 @@ exports.createWalletForUser = async (userId) => {
   catch (error) { console.error('❌ فشل إنشاء المحفظة:', error.message); }
 };
 
-// 📄 جلب رصيد المستخدم (نسخة إنتاجية خفيفة مع fallback آمن عند الحاجة)
+// 📄 جلب رصيد المستخدم الحالي (نسخة نظيفة بعد التطبيع)
 exports.getMyBalance = async (req, res) => {
   try {
     const raw = req.user?._id || req.user?.id || req.user?.userId;
     if (!raw) return res.status(401).json({ message: 'رمز الوصول لا يحوي معرّف مستخدم' });
 
     let uid;
-    try { uid = new mongoose.Types.ObjectId(String(raw)); }
+    try { uid = new mongoose.Types.ObjectId(raw); }
     catch { return res.status(400).json({ message: 'معرّف المستخدم غير صالح' }); }
 
     const now = new Date();
 
-    // تأكد من وجود محفظة للمستخدم (create if missing)
+    // تأكيد وجود المحفظة
     let w = await Wallet.findOne({ userId: uid }).lean();
     if (!w) {
       w = await Wallet.create({ userId: uid, balance: 0, currency: 'SYP' });
-      w = w.toObject();
     }
 
-    const col = mongoose.connection.db.collection('transactions');
-
-    // تجميعة صارمة على userId:ObjectId (هذا هو المسار الطبيعي بعد التنظيف)
-    const [strictAgg = {}] = await col.aggregate([
+    // حساب الرصيد الدفتري من معاملات المستخدم فقط
+    const [sum = {}] = await Transaction.collection.aggregate([
       { $match: { userId: uid } },
       {
         $group: {
           _id: null,
-          credit: { $sum: { $cond: [{ $eq: ["$type", "credit"] }, "$amount", 0] } },
-          debit:  { $sum: { $cond: [{ $eq: ["$type", "debit"]  }, "$amount", 0] } },
-        }
+          credit: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', 0] } },
+          debit:  { $sum: { $cond: [{ $eq: ['$type', 'debit' ] }, '$amount', 0] } },
+        },
       },
-      { $project: { _id: 0, ledger: { $subtract: ["$credit", "$debit"] } } }
+      { $project: { _id: 0, ledger: { $subtract: ['$credit', '$debit'] } } },
     ]).toArray();
 
-    let ledger = Number(strictAgg.ledger || 0);
+    const ledger = Number(sum.ledger || 0);
 
-    // (اختياري جداً) fallback $expr لو في بيانات قديمة بقيت بطريق الخطأ
-    // نُفعّل فقط لو أردت هامش أمان إضافي – يمكن حذف هذا بعد فترة.
-    if (!ledger && req.query.fallback === '1') {
-      const uidStr = uid.toString();
-      const [exprAgg = {}] = await col.aggregate([
-        { $match: {
-            $or: [
-              { userId: uid },
-              { $expr: { $eq: [ { $toString: "$userId" }, uidStr ] } },
-            ]
-        }},
-        {
-          $group: {
-            _id: null,
-            credit: { $sum: { $cond: [{ $eq: ["$type", "credit"] }, "$amount", 0] } },
-            debit:  { $sum: { $cond: [{ $eq: ["$type", "debit"]  }, "$amount", 0] } },
-          }
-        },
-        { $project: { _id: 0, ledger: { $subtract: ["$credit", "$debit"] } } }
-      ]).toArray();
-      ledger = Number(exprAgg.ledger || 0);
-    }
-
-    // مزامنة المحفظة إذا اختلفت
+    // مزامنة المحفظة لو اختلفت
     if ((Number(w.balance) || 0) !== ledger) {
       await Wallet.updateOne(
-        { _id: w._id || w._id },
+        { _id: w._id },
         { $set: { balance: ledger, currency: w.currency || 'SYP', updatedAt: now } }
       );
     }
 
-    // Debug خفيف عند الطلب فقط
-    const debug = (String(req.query.debug) === '1')
-      ? { uid: uid.toString() }
-      : undefined;
-
-    return res.status(200).json({ balance: ledger, currency: 'SYP', debug });
+    return res.status(200).json({ balance: ledger, currency: w?.currency || 'SYP' });
   } catch (err) {
     console.error('getMyBalance error:', err);
-    return res.status(500).json({ message: 'فشل جلب الرصيد', error: err.message });
+    return res.status(500).json({ message: 'فشل جلب الرصيد' });
   }
 };
 
