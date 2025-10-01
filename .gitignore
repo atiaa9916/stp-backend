@@ -10,3 +10,8 @@ coverage/
 tmp/
 .DS_Store
 Thumbs.db
+
+# dev scratch
+createWalletManually.js
+quick-check.js
+
