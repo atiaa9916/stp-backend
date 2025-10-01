@@ -4,6 +4,8 @@ const Wallet = require('../models/Wallet');
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 
+const CURRENCY = 'SYP';
+
 // سجل معاملة بأمان (لا يُسقط الطلب لو فشل التسجيل)
 async function logTxnSafe(doc, session) {
   try {
@@ -15,18 +17,37 @@ async function logTxnSafe(doc, session) {
   }
 }
 
-// دالة مساعدة: upsert محفظة + توحيد إلى userId
-async function upsertWallet(uid, session) {
+// upsert محفظة + توحيد إلى userId (مع معالجة صارمة لمشكلة $unset + strict)
+async function upsertWallet(uidRaw, session) {
+  const uid = uidRaw instanceof mongoose.Types.ObjectId ? uidRaw : new mongoose.Types.ObjectId(uidRaw);
   const now = new Date();
-  return Wallet.findOneAndUpdate(
+
+  // 1) upsert بدون $unset لتجنّب strict error
+  const w = await Wallet.findOneAndUpdate(
     { $or: [{ userId: uid }, { user: uid }] },
     {
-      $setOnInsert: { userId: uid, balance: 0, currency: 'SYP', createdAt: now },
+      $setOnInsert: { userId: uid, balance: 0, currency: CURRENCY, createdAt: now },
       $set: { updatedAt: now },
-      $unset: { user: '' },
+      // لا $unset هنا أثناء upsert
     },
-    { new: true, upsert: true, session }
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+      strict: false,         // المهم لتفادي Path "user" is not in schema مع upsert
+      session,
+    }
   );
+
+  // 2) بعد أن أصبحت لدينا وثيقة، احذف أي حقل قديم user إن وجد
+  try {
+    await Wallet.updateOne({ _id: w._id, user: { $exists: true } }, { $unset: { user: '' } }, { session });
+  } catch (e) {
+    // لا نُسقط العملية: فقط تحذير
+    console.warn('Wallet cleanup (unset user) failed:', e.message);
+  }
+
+  return w;
 }
 
 // 📥 إنشاء محفظة لمستخدم (يُستدعى عند التسجيل)
@@ -50,7 +71,7 @@ exports.getMyBalance = async (req, res) => {
     // تأكيد وجود المحفظة
     let w = await Wallet.findOne({ userId: uid }).lean();
     if (!w) {
-      w = await Wallet.create({ userId: uid, balance: 0, currency: 'SYP' });
+      w = await Wallet.create({ userId: uid, balance: 0, currency: CURRENCY });
     }
 
     // حساب الرصيد الدفتري من معاملات المستخدم فقط
@@ -72,34 +93,43 @@ exports.getMyBalance = async (req, res) => {
     if ((Number(w.balance) || 0) !== ledger) {
       await Wallet.updateOne(
         { _id: w._id },
-        { $set: { balance: ledger, currency: w.currency || 'SYP', updatedAt: now } }
+        { $set: { balance: ledger, currency: w.currency || CURRENCY, updatedAt: now } }
       );
     }
 
-    return res.status(200).json({ balance: ledger, currency: w?.currency || 'SYP' });
+    return res.status(200).json({ balance: ledger, currency: w?.currency || CURRENCY });
   } catch (err) {
     console.error('getMyBalance error:', err);
     return res.status(500).json({ message: 'فشل جلب الرصيد' });
   }
 };
 
-
 // ➕ شحن الرصيد
 exports.chargeBalance = async (req, res) => {
   try {
     const amt = Number(req.body?.amount);
-    if (!Number.isFinite(amt) || amt <= 0)
+    if (!Number.isFinite(amt) || !Number.isInteger(amt) || amt <= 0)
       return res.status(400).json({ message: 'مبلغ غير صالح' });
 
     const session = await mongoose.startSession();
     let w;
-    await session.withTransaction(async () => {
-      w = await upsertWallet(req.user._id, session);
-      await Wallet.updateOne({ _id: w._id }, { $inc: { balance: amt }, $set: { updatedAt: new Date() } }, { session });
-      await logTxnSafe({ userId: req.user._id, type: 'credit', amount: amt, description: 'شحن رصيد المحفظة' }, session);
-      w = await Wallet.findById(w._id).session(session);
-    });
-    session.endSession();
+    try {
+      await session.withTransaction(async () => {
+        w = await upsertWallet(req.user._id, session);
+        await Wallet.updateOne(
+          { _id: w._id },
+          { $inc: { balance: amt }, $set: { updatedAt: new Date() } },
+          { session }
+        );
+        await logTxnSafe(
+          { userId: w.userId, type: 'credit', amount: amt, description: 'شحن رصيد المحفظة' },
+          session
+        );
+        w = await Wallet.findById(w._id).session(session);
+      });
+    } finally {
+      session.endSession();
+    }
 
     res.status(200).json({ message: 'تم شحن الرصيد بنجاح', balance: w.balance });
   } catch (error) {
@@ -148,8 +178,8 @@ exports.transferBalance = async (req, res) => {
       await Wallet.updateOne({ _id: wSender._id }, { $inc: { balance: -amt }, $set: { updatedAt: new Date() } }, { session });
       await Wallet.updateOne({ _id: wRecip._id },  { $inc: { balance:  amt }, $set: { updatedAt: new Date() } }, { session });
 
-      await logTxnSafe({ userId: senderId, type: 'debit',  amount: amt, description: `تحويل إلى ${recipientUser.phone}` }, session);
-      await logTxnSafe({ userId: recipientUser._id, type: 'credit', amount: amt, description: `استلام من ${req.user.phone}` }, session);
+      await logTxnSafe({ userId: wSender.userId, type: 'debit',  amount: amt, description: `تحويل إلى ${recipientUser.phone}` }, session);
+      await logTxnSafe({ userId: wRecip.userId,  type: 'credit', amount: amt, description: `استلام من ${senderUser.phone}` }, session);
 
       senderWallet = await Wallet.findById(wSender._id).session(session);
     });
