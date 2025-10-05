@@ -1,3 +1,4 @@
+// routes/walletRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
@@ -5,7 +6,8 @@ const { protect } = require('../middleware/authMiddleware');
 const {
   getMyBalance,
   chargeBalance,
-  transferBalance // ✅ أُضيفت وظيفة التحويل هنا
+  transferBalance,   // موجود لديك
+  getStatement,      // ✅ أضف هذا السطر
 } = require('../controllers/walletController');
 
 // 📄 جلب الرصيد
@@ -20,5 +22,8 @@ router.post('/charge', protect, chargeBalance);
 
 // 🔁 تحويل الرصيد إلى مستخدم آخر
 router.post('/transfer', protect, transferBalance);
+
+// 🧾 كشف العمليات (Statement)
+router.get('/statement', protect, getStatement); // ✅ أضف هذا السطر
 
 module.exports = router;
