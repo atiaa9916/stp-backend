@@ -138,6 +138,62 @@ exports.chargeBalance = async (req, res) => {
   }
 };
 
+// 📄 كشف الحركات (statement) مع ترشيح وترقيم صفحات
+exports.getStatement = async (req, res) => {
+  try {
+    // التحقق من الـ uid من نفس أسلوب الدوال الأخرى
+    const raw = req.user?._id || req.user?.id || req.user?.userId;
+    if (!raw) return res.status(401).json({ message: 'رمز الوصول لا يحوي معرّف مستخدم' });
+
+    let uid;
+    try { uid = new mongoose.Types.ObjectId(raw); }
+    catch { return res.status(400).json({ message: 'معرّف المستخدم غير صالح' }); }
+
+    // قراءة باراميترات الاستعلام (مع قيم افتراضية وحدود منطقية)
+    const q = req.query || {};
+    const limitInput = parseInt(q.limit, 10);
+    const pageInput  = parseInt(q.page, 10);
+
+    const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 20, 1), 50); // 1..50
+    const page  = Math.max(Number.isFinite(pageInput) ? pageInput : 1, 1);
+    const skip  = (page - 1) * limit;
+
+    // فلترة اختيارية حسب النوع والوقت
+    const match = { userId: uid };
+    if (q.type === 'credit' || q.type === 'debit') match.type = q.type;
+
+    if (q.before || q.after) {
+      match.createdAt = {};
+      if (q.before) match.createdAt.$lt = new Date(q.before);
+      if (q.after)  match.createdAt.$gt = new Date(q.after);
+    }
+
+    // اجلب العناصر + العدد الإجمالي بالتوازي
+    const [items, total] = await Promise.all([
+      Transaction.find(
+        match,
+        { _id: 1, type: 1, amount: 1, createdAt: 1, desc: 1 } // Projection بسيط
+      )
+      .sort({ createdAt: -1 })   // الأحدث أولاً
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+
+      Transaction.countDocuments(match),
+    ]);
+
+    return res.status(200).json({
+      items,
+      total,
+      page,
+      limit,
+    });
+  } catch (err) {
+    console.error('getStatement error:', err);
+    return res.status(500).json({ message: 'فشل جلب كشف الحركات' });
+  }
+};
+
 // 🔁 تحويل رصيد (يسمح فقط driver ↔ passenger)
 exports.transferBalance = async (req, res) => {
   try {
