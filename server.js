@@ -5,6 +5,8 @@ const dotenv   = require('dotenv');
 const cors     = require('cors');
 const path     = require('path');
 const fs       = require('fs');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 dotenv.config();
 
@@ -19,6 +21,21 @@ const PORT = process.env.PORT || 5000;
 
 // ========== Middleware عام ==========
 app.use(express.json());
+
+// أمان الهيدر
+app.use(helmet({
+  crossOriginResourcePolicy: false,   // لأننا نرجع JSON
+  contentSecurityPolicy: false        // موقوف الآن (لازم إذا بدأنا نرجّع صفحات HTML)
+}));
+
+// معدل الطلبات العام (مثال: 300 طلب لكل 15 دقيقة)
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(apiLimiter);
 
 // CORS من .env (مثال: CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000)
 const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
