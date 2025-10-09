@@ -197,3 +197,7 @@ const passengerToken = localStorage.getItem('stp.passenger.token');
 ```
 - تأكد من تمرير الـ JWT الصحيح حسب دور المستخدم (سائق/راكب).
 - هذا الملف يركّز على الاندبوينتس الخاصة بالمحفظة فقط.
+
+## Documentation
+- [Changelog](./CHANGELOG.md)
+
