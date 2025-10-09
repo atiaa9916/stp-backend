@@ -201,3 +201,5 @@ const passengerToken = localStorage.getItem('stp.passenger.token');
 ## Documentation
 - [Changelog](./CHANGELOG.md)
 
+
+- [Latest release](https://github.com/atiaa9916/stp-backend/releases/latest)
