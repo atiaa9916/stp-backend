@@ -1,3 +1,4 @@
+// jest.config.js
 module.exports = {
   testEnvironment: "node",
   testMatch: ["**/tests/**/*.spec.js"],
@@ -23,12 +24,10 @@ module.exports = {
     "!app.js",
     "!server.js",
 
-    // لو عندك Utils أو Jobs خارج نطاق الاختبار (أضفها هنا)
     "!utils/**",
     "!jobs/**",
   ],
 
-  // تجاهل مسارات من الحساب (احتياطي)
   coveragePathIgnorePatterns: [
     "/node_modules/",
     "<rootDir>/tests/",
@@ -38,21 +37,13 @@ module.exports = {
     "<rootDir>/jobs/",
   ],
 
-  /**
-   * 🎯 عتبات مرحلية (تحت النتائج الحالية بقليل حتى يمرّ الـ CI الآن):
-   * - statements ~38.48% → نضبط 38
-   * - branches   ~20.75% → نضبط 20
-   * - functions  ~22.83% → نضبط 22
-   * - lines      ~40.65% → نضبط 40
-   *
-   * لاحقًا نرفعها تدريجيًا مع إضافة اختبارات جديدة.
-   */
+  // 👇 خفّضنا functions إلى 23% (نرفعها لاحقًا بعد إضافة اختبارات)
   coverageThreshold: {
     global: {
-      statements: 38,
       branches: 20,
-      functions: 22,
-      lines: 40,
+      functions: 23,
+      lines: 41,
+      statements: 41,
     },
   },
 };
