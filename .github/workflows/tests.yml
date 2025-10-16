@@ -17,13 +17,29 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: 'npm'
 
-      - run: npm ci
+      - name: Install deps
+        run: npm ci
 
-      # ✅ شغّل سكرِبت التغطية بدلاً من test العادي
-      - run: npm run coverage
+      - name: Print env & versions
+        run: |
+          node -v
+          npm -v
+          echo "PWD=$(pwd)"
+          ls -la
+          echo "=== tests dir ==="
+          ls -la tests || true
 
-      # 🗂️ ارفع ملفات التغطية كأرتيفاكت
+      # 🔎 طباعة قائمة ملفات الاختبار التي يراها Jest
+      - name: List Jest tests
+        run: npx jest --listTests
+
+      # ✅ شغّل سكرِبت التغطية
+      - name: Run coverage
+        run: npm run coverage
+
+      # 🗂️ ارفع ملفات التغطية كأرتيفاكت (حتى لو فشلت خطوة سابقة، نحاول الرفع)
       - name: Upload coverage artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.node }}
@@ -31,8 +47,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # ☁️ Codecov: ارفع lcov فقط، لا نبحث عن JUnit
+      # ☁️ Codecov: ارفع lcov فقط؛ لا تُسقِط الـ CI إذا فشل الرفع
       - name: Upload coverage to Codecov
+        if: always()
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }} # اتركه فارغًا لو المستودع عام

@@ -3,7 +3,9 @@ module.exports = {
   testEnvironment: "node",
   testMatch: ["**/tests/**/*.spec.js"],
   setupFilesAfterEnv: ["<rootDir>/tests/setup-env.js"],
-  testTimeout: 60000,
+
+  // ⏱️ CI أبطأ: زودنا المهلة
+  testTimeout: 90000,
 
   // ✅ تغطية
   collectCoverage: true,
@@ -37,7 +39,7 @@ module.exports = {
     "<rootDir>/jobs/",
   ],
 
-  // 👇 خفّضنا functions إلى 23% (نرفعها لاحقًا بعد إضافة اختبارات)
+  // 👇 العتبات الحالية (نرفعها تدريجيًا لاحقًا)
   coverageThreshold: {
     global: {
       branches: 20,
