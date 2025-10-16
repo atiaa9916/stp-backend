@@ -1,28 +1,28 @@
+//controllers/authController.js
+
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
-const { createWalletForUser } = require('./walletController'); // ✅ إضافة الاستدعاء
+const { createWalletForUser } = require('./walletController');
 
-// إنشاء توكن JWT
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: '30d',
-  });
-};
+// إنشاء توكن JWT موحّد
+const generateToken = (id) =>
+  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-// ✅ تسجيل مستخدم جديد
+// ✅ تسجيل مستخدم جديد (عام) — يفرض role='passenger'
 exports.registerUser = async (req, res) => {
   try {
-    const { name, phone, password, role } = req.body;
+    const { name, phone, password } = req.body;
 
-    const userExists = await User.findOne({ phone });
-    if (userExists) {
+    const exists = await User.findOne({ phone });
+    if (exists) {
       return res.status(400).json({ message: 'المستخدم موجود مسبقًا' });
     }
 
-    const newUser = await User.create({ name, phone, password, role });
+    // تجاهل أي role قادم من العميل
+    const newUser = await User.create({ name, phone, password, role: 'passenger' });
 
-    // ✅ إنشاء محفظة بعد التسجيل مباشرة
-    await createWalletForUser(newUser._id);
+    // إنشاء محفظة بعد التسجيل مباشرة (غير حرج إن فشل)
+    try { await createWalletForUser(newUser._id); } catch (_) {}
 
     res.status(201).json({
       _id: newUser._id,
@@ -36,11 +36,12 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-// ✅ تسجيل الدخول
+// ✅ تسجيل الدخول (عام)
 exports.loginUser = async (req, res) => {
   try {
     const { phone, password } = req.body;
 
+    // انتبه لإضافة +password لأن الحقل غالبًا select:false
     const user = await User.findOne({ phone }).select('+password');
     if (!user || !(await user.matchPassword(password))) {
       return res.status(401).json({ message: 'بيانات الدخول غير صحيحة' });

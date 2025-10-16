@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const CommissionSettings = require('../models/CommissionSettings');
-const { protectAdmin } = require('../middleware/adminMiddleware');
+const protectAdmin = require('../middleware/adminMiddleware');
 
 // ✅ إضافة إعداد عمولة جديد
 router.post('/', protectAdmin, async (req, res) => {

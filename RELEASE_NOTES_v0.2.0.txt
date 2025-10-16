@@ -1,0 +1,9 @@
+﻿- 9c7ad78 chore(security): enable CORS from env + helmet + rate limiting (#5)
+- ed54d62 chore(auth): remove native bcrypt and standardize on bcryptjs (#4)
+- 6f0d386 docs(readme): document Wallet API (balance, statement, charge, transfer) (#3)
+- d9136d1 chore(release): bump version for wallet statement endpoint
+- 8959d4b feat(wallet): add /api/wallet/statement with paging & type/date filters (#2)
+- c65b0e8 Merge pull request #1 from atiaa9916/chore/cleanup-wallet-balance
+- f4f5f21 fix(wallet): upsert-safe wallet (strict mode), remove legacy user field, and keep balance in sync
+- 50ea31c chore: remove temp scripts (probe-ledger, quick-check) and ignore scratch file
+- d9536a2 feat(wallet): clean getMyBalance using normalized userId and sync wallet

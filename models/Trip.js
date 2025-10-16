@@ -1,3 +1,4 @@
+// models/Trip.js
 const mongoose = require('mongoose');
 
 const pointSchema = new mongoose.Schema({
@@ -24,8 +25,14 @@ const tripSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// مواقع
 tripSchema.index({ pickupLocation: '2dsphere' });
 tripSchema.index({ dropoffLocation: '2dsphere' });
+
+// فهارس استعلام شائعة
+tripSchema.index({ passenger: 1, status: 1, createdAt: -1 });
+tripSchema.index({ driver: 1,    status: 1, createdAt: -1 });
+tripSchema.index({ createdAt: -1 });
 
 const Trip = mongoose.model('Trip', tripSchema);
 module.exports = Trip;

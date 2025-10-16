@@ -1,7 +1,10 @@
+// routes/paymentsRoutes.js
+
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const protectAdmin = require('../middleware/adminMiddleware');
 const {
   createShamCashRequest,
   getMyPaymentRequests,
@@ -27,9 +30,9 @@ router.post('/request/shamcash', protect, upload.single('proof'), createShamCash
 // مستخدم: طلباتي
 router.get('/my-requests', protect, getMyPaymentRequests);
 
-// مدير: موافقة/رفض
-router.patch('/:id/approve', protect, adminOnly, approvePaymentRequest);
-router.patch('/:id/reject', protect, adminOnly, rejectPaymentRequest);
+// مدير: موافقة/رفض (حارس مسؤول موحّد)
+router.patch('/:id/approve', protectAdmin, approvePaymentRequest);
+router.patch('/:id/reject',  protectAdmin, rejectPaymentRequest);
 
 // فيزا (تهيئة جلسة)
 router.post('/visa/create-session', protect, createVisaSession);

@@ -1,46 +1,62 @@
+// middleware/authMiddleware.js
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-// 🔐 Middleware لحماية المسارات
+/**
+ * تحصين عام:
+ * - يدعم id أو _id أو userId من الـ JWT
+ * - يتحقق من isActive
+ * - يستبعد كلمة المرور من الاستعلام
+ */
 const protect = async (req, res, next) => {
-  let token;
-
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith('Bearer')
-  ) {
-    try {
-      // استخراج التوكن
-      token = req.headers.authorization.split(' ')[1];
-
-      // التحقق من صحة التوكن
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // جلب بيانات المستخدم من قاعدة البيانات بدون كلمة المرور
-      req.user = await User.findById(decoded.id).select('_id role phone');
-
-      next(); // السماح بالمتابعة
-    } catch (error) {
-      console.error(error);
-      res.status(401).json({ message: 'فشل التحقق من التوكن' });
+  try {
+    const auth = req.headers.authorization || '';
+    if (!auth.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'لا يوجد توكن، الوصول مرفوض' });
     }
-  }
 
-  if (!token) {
-    res.status(401).json({ message: 'لا يوجد توكن، الوصول مرفوض' });
-  }
-};
+    const token = auth.slice(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-// ✅ التحقق من أن المستخدم هو مدير
-const adminOnly = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
+    const userId = decoded.id || decoded._id || decoded.userId;
+    if (!userId) return res.status(401).json({ message: 'توكن غير صالح' });
+
+    const user = await User.findById(userId).select('-password');
+    if (!user || user.isActive === false) {
+      return res.status(401).json({ message: 'فشل التحقق من التوكن' });
+    }
+
+    // إبقاء علم isAdmin إن وُجد في التوكن (لا يؤثر على الدور المخزن)
+    if (typeof decoded.isAdmin === 'boolean') {
+      user.isAdmin = decoded.isAdmin;
+    }
+
+    req.user = user;
     next();
-  } else {
-    res.status(403).json({ message: 'غير مصرح - للمسؤولين فقط' });
+  } catch (error) {
+    return res.status(401).json({ message: 'فشل التحقق من التوكن' });
   }
 };
+
+// حارس أدوار عام
+const roleGuard = (...allowed) => (req, res, next) => {
+  if (!req.user || !allowed.includes(req.user.role)) {
+    return res.status(403).json({ message: 'غير مصرح' });
+  }
+  next();
+};
+
+// مشتقات جاهزة
+const protectPassenger = [protect, roleGuard('passenger')];
+const protectDriver    = [protect, roleGuard('driver')];
+const protectVendor    = [protect, roleGuard('vendor')];
+const protectAdmin     = [protect, roleGuard('admin')];
 
 module.exports = {
   protect,
-  adminOnly // ← تأكد أن هذه مُصدرة
+  roleGuard,
+  protectPassenger,
+  protectDriver,
+  protectVendor,
+  protectAdmin,
 };

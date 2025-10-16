@@ -1,7 +1,7 @@
 // routes/adminRoutes.js أو ملف جديد adminJobRoutes.js
 const express = require('express');
 const router = express.Router();
-const { protectAdmin } = require('../middleware/adminMiddleware');
+const protectAdmin = require('../middleware/adminMiddleware');
 const processScheduledTrips = require('../utils/scheduledTripProcessor');
 
 router.post('/run-scheduled-trips', protectAdmin, async (req, res) => {

@@ -1,0 +1,81 @@
+name: tests
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # 🧰 تسريع mongodb-memory-server عبر كاش الباينري المُنزَّل
+      - name: Cache MongoDB binaries (mongodb-memory-server)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mdb-binaries-${{ runner.os }}-${{ matrix.node }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            mdb-binaries-${{ runner.os }}-${{ matrix.node }}-
+            mdb-binaries-${{ runner.os }}-
+
+      - run: npm ci
+
+      # ✅ تشغيل الاختبارات بتسلسل وإخراج تغطية + JUnit
+      - name: Run tests (CI)
+        run: npm run test:ci
+        env:
+          NODE_ENV: test
+          CI: true
+
+      # 📦 ارفع تقارير التغطية و JUnit كـ artifacts
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.node }}
+          path: coverage
+          if-no-files-found: ignore
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.node }}
+          path: reports/junit
+          if-no-files-found: ignore
+
+      # 📰 عرض نتائج JUnit ضمن تبويب Summary (يكوّن تعليقات مفيدة عند الفشل)
+      - name: Publish Test Report
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Jest Tests (${{ matrix.node }})
+          path: reports/junit/**/*.xml
+          reporter: jest-junit
+          fail-on-error: false
+
+      # 📊 رفع التغطية إلى Codecov (ستحتاج CODECOV_TOKEN في Secrets)
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          flags: node-${{ matrix.node }}
+          fail_ci_if_error: false
+          verbose: true

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
-const { protectAdmin } = require('../middleware/adminMiddleware');
+const protectAdmin = require('../middleware/adminMiddleware');
 
 // ✅ عرض جميع المستخدمين مع إمكانية الفلترة حسب الدور
 router.get('/', protectAdmin, async (req, res) => {

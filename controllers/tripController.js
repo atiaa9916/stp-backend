@@ -1,4 +1,4 @@
-// 📂 controllers/tripController.js 
+// 📂 controllers/tripController.js
 
 // ====== Imports ======
 const mongoose = require('mongoose');
@@ -11,15 +11,16 @@ const Transaction = require('../models/Transaction');
 const TripAcceptanceLog = require('../models/TripAcceptanceLog');
 const Setting = require('../models/Setting');
 
-// ====== بيئة قابلة للتهيئة ======
-const COMMISSION_CHARGE_STAGE = (process.env.COMMISSION_CHARGE_STAGE || 'completed').toLowerCase(); // 'accepted' | 'completed'
+// ====== إعدادات من البيئة ======
+function isPrechargeEnabled() {
+  return String(process.env.PRECHARGE_WALLET || 'false').toLowerCase() === 'true';
+}
 const VALID_PAYMENT_METHODS = ['cash', 'wallet', 'bank'];
 
-// تطبيع أماكن الانطلاق/الوجهة إلى شكل موحد { address, lat, lng, location:{type:'Point',coordinates:[lng,lat]} }
+// ====== تطبيع مواقع الانطلاق/الوصول ======
 function normalizePickupDropoff(body) {
   const normPoint = (o) => {
     if (!o) return null;
-    // GeoJSON
     if (o.location?.type === 'Point' && Array.isArray(o.location.coordinates)) {
       const [lng, lat] = o.location.coordinates.map(Number);
       return {
@@ -28,7 +29,6 @@ function normalizePickupDropoff(body) {
         location: { type: 'Point', coordinates: [lng, lat] }
       };
     }
-    // lat/lng مباشرة
     if (o.lat != null && o.lng != null) {
       const lat = Number(o.lat), lng = Number(o.lng);
       return {
@@ -57,7 +57,6 @@ function normalizePickupDropoff(body) {
   return { pickup, dropoff };
 }
 
-
 // ====== Helpers ======
 function assert(condition, msg, status = 400) {
   if (!condition) {
@@ -83,11 +82,9 @@ function normalizeFromEnv() {
 function asObjectId(id) { try { return new mongoose.Types.ObjectId(id); } catch { return null; } }
 
 async function getActiveCommission() {
-  // 1) commissionsettings
   const cs = await CommissionSettings.findOne({ isActive: true }).lean();
   if (cs) return cs;
 
-  // 2) settings:key=commission
   const s = await Setting.findOne({ key: 'commission' }).lean();
   if (s && s.isActive !== false) {
     if (String(s.model||'').toLowerCase()==='percent')
@@ -95,50 +92,74 @@ async function getActiveCommission() {
     return { type:'fixedAmount', value: Number(s.value||0), applies:s.applies||{wallet:true,cash:false}, chargeStage: s.chargeStage||'completed', isActive:true };
   }
 
-  // 3) env
   return normalizeFromEnv();
 }
 
 function calcCommissionAmount(fare, settings) {
   if (!settings) return 0;
   switch (settings.type) {
-    case 'fixedPercentage': return Math.max(0, (fare * settings.value) / 100);
+    case 'fixedPercentage': return Math.max(0, Math.round((fare * settings.value) / 100));
     case 'fixedAmount':     return Math.max(0, settings.value);
-    case 'smartDynamic':    return 0; // لاحقًا
+    case 'smartDynamic':    return 0;
     default:                return 0;
   }
 }
 
-// اسم موحّد لاستخدامه في كلّ مكان
-function findWallet(userId, session) {
-  return Wallet.findOne({
-    $or: [{ userId: userId }, { user: userId }]
-  }).session(session || null);
+function shouldApplyCommission(paymentMethod, settings) {
+  if (!settings || !settings.applies) return false;
+  if (paymentMethod === 'wallet') return !!settings.applies.wallet;
+  if (paymentMethod === 'cash')   return !!settings.applies.cash;
+  return false;
 }
 
-// نسجل userId و user معًا لتوافق كل الإصدارات من الـ Schema
+/**
+ * فضّل محفظة user أولًا (مرتبة: أعلى رصيد ثم أحدث)، ثم fallback لـ userId (إرث).
+ */
+async function findWallet(userId, session) {
+  const primary = await Wallet.find({ user: userId })
+    .session(session || null)
+    .sort({ balance: -1, updatedAt: -1 })
+    .limit(1);
+  if (primary && primary[0]) return primary[0];
+
+  const legacy = await Wallet.find({ userId: (userId && userId.toString) ? userId.toString() : String(userId || '') })
+    .session(session || null)
+    .sort({ balance: -1, updatedAt: -1 })
+    .limit(1);
+
+  return legacy && legacy[0] ? legacy[0] : null;
+}
+
+// ✅ addTx يوحّد الوصف في الحقلين description/desc
 async function addTx({ userId, type, amount, description, method }, session) {
   return Transaction.create(
-    [{ userId, user: userId, type, amount, desc: description, method }],
+    [{
+      userId,
+      user: userId,
+      type,
+      amount,
+      method,
+      description,
+      desc: description
+    }],
     { session }
   );
 }
 
-// ====== منطق مالي ذري (بجلسة) ======
-
-// خصم أجرة من محفظة الراكب (wallet) — يرجع الرصيد الجديد
+// ====== منطق مالي ذري ======
 async function chargePassengerWallet({ passengerId, amount, method }, session) {
   assert(method === 'wallet', 'طريقة الدفع ليست محفظة', 400);
   assert(amount > 0, 'المبلغ غير صالح', 400);
 
-  const pw = await findWallet(passengerId, session);
+  let pw = await findWallet(passengerId, session);
+  if (!pw) pw = await findWallet(passengerId, null);
   assert(pw && pw.balance >= amount, 'الرصيد غير كافٍ في محفظة الراكب أو لا توجد محفظة');
 
   pw.balance -= amount;
   await pw.save({ session });
   await addTx({
     userId: passengerId,
-    type: 'debit', // خصم من محفظة الراكب
+    type: 'debit',
     amount,
     description: 'دفع أجرة رحلة من المحفظة',
     method: 'wallet',
@@ -147,17 +168,17 @@ async function chargePassengerWallet({ passengerId, amount, method }, session) {
   return { ok: true, newBalance: pw.balance };
 }
 
-// رد مبلغ للراكب — يرجع الرصيد الجديد
 async function refundPassengerWallet({ passengerId, amount }, session) {
   if (!amount || amount <= 0) return { ok: false, newBalance: null };
-  const pw = await findWallet(passengerId, session);
+  let pw = await findWallet(passengerId, session);
+  if (!pw) pw = await findWallet(passengerId, null);
   if (!pw) return { ok: false, newBalance: null };
 
   pw.balance += amount;
   await pw.save({ session });
   await addTx({
     userId: passengerId,
-    type: 'credit', // استرداد إلى محفظة الراكب
+    type: 'credit',
     amount,
     description: 'استرداد أجرة رحلة ملغاة',
     method: 'wallet',
@@ -166,23 +187,23 @@ async function refundPassengerWallet({ passengerId, amount }, session) {
   return { ok: true, newBalance: pw.balance };
 }
 
-// خصم عمولة من محفظة السائق — يرجع قيمة العمولة المخصومة
-async function chargeDriverCommission({ driverId, fare }, session) {
+async function chargeDriverCommission({ driverId, fare, description = 'خصم عمولة منصة عن رحلة' }, session) {
   const settings = await getActiveCommission();
   assert(settings, 'إعدادات العمولة غير موجودة، الرجاء إدخالها أولاً', 500);
 
   const commissionAmount = calcCommissionAmount(fare, settings);
   if (commissionAmount > 0) {
-    const dw = await findWallet(driverId, session);
+    let dw = await findWallet(driverId, session);
+    if (!dw) dw = await findWallet(driverId, null);
     assert(dw && dw.balance >= commissionAmount, 'رصيد السائق غير كافٍ لدفع العمولة أو لا توجد محفظة');
 
     dw.balance -= commissionAmount;
     await dw.save({ session });
     await addTx({
       userId: driverId,
-      type: 'debit', // خصم من محفظة السائق
+      type: 'debit',
       amount: commissionAmount,
-      description: 'خصم عمولة منصة عن رحلة',
+      description,
       method: 'wallet',
     }, session);
   }
@@ -191,13 +212,15 @@ async function chargeDriverCommission({ driverId, fare }, session) {
 
 async function refundDriverCommission({ driverId, amount }, session) {
   if (!amount || amount <= 0) return;
-  const dw = await findWallet(driverId, session);
+  let dw = await findWallet(driverId, session);
+  if (!dw) dw = await findWallet(driverId, null);
   if (!dw) return;
+
   dw.balance += amount;
   await dw.save({ session });
   await addTx({
     userId: driverId,
-    type: 'credit', // رد إلى محفظة السائق
+    type: 'credit',
     amount,
     description: 'رد عمولة لرحلة ملغاة',
     method: 'wallet',
@@ -205,14 +228,6 @@ async function refundDriverCommission({ driverId, amount }, session) {
 }
 
 // ====== Controllers ======
-
-/**
- * إنشاء رحلة مع idempotency
- * سياسة الدفع:
- *  - wallet + غير مجدولة ⇒ خصم فوري عند الإنشاء.
- *  - wallet + مجدولة ⇒ الخصم عند ready/accepted (أيهما أولًا).
- *  - cash/bank ⇒ paid=false حتى الإكمال/نجاح البوابة.
- */
 exports.createTrip = async (req, res) => {
   let session;
   try {
@@ -224,22 +239,20 @@ exports.createTrip = async (req, res) => {
       dropoffLocation,
       fare,
       paymentMethod = 'cash',
-      driverId,              // اختياري
+      driverId,
       isScheduled = false,
-      scheduledDateTime,     // ISO
+      scheduledDateTime,
       uniqueRequestId
     } = req.body || {};
 
-    // ← تطبيع أي صيغة واردة (pickup/dropoff | origin/destination | start/end | flat lat/lng ...)
-      if (!pickupLocation || !dropoffLocation) {
-        const { pickup, dropoff } = normalizePickupDropoff(req.body || {});
-        pickupLocation  = pickupLocation  || pickup?.location  || null;
-        dropoffLocation = dropoffLocation || dropoff?.location || null;
-        req.body.pickupLocation  = pickupLocation;
-        req.body.dropoffLocation = dropoffLocation;
-      }
+    if (!pickupLocation || !dropoffLocation) {
+      const { pickup, dropoff } = normalizePickupDropoff(req.body || {});
+      pickupLocation  = pickupLocation  || pickup?.location  || null;
+      dropoffLocation = dropoffLocation || dropoff?.location || null;
+      req.body.pickupLocation  = pickupLocation;
+      req.body.dropoffLocation = dropoffLocation;
+    }
 
-    // تحقق مدخلات
     assert(pickupLocation && dropoffLocation, 'يجب تحديد مكان الانطلاق والوجهة');
     assert(typeof fare === 'number' && fare > 0, 'الأجرة غير صالحة');
     assert(VALID_PAYMENT_METHODS.includes(paymentMethod), 'طريقة الدفع غير مدعومة');
@@ -249,7 +262,6 @@ exports.createTrip = async (req, res) => {
       assert(new Date(scheduledDateTime).getTime() > Date.now(), 'وقت الجدولة يجب أن يكون مستقبليًا');
     }
 
-    // idempotency
     const finalRequestId = uniqueRequestId || uuidv4();
     if (finalRequestId) {
       const existing = await Trip.findOne({ uniqueRequestId: finalRequestId }).lean();
@@ -261,14 +273,13 @@ exports.createTrip = async (req, res) => {
     session = await mongoose.startSession();
 
     let created;
-    let paxNewBalance = null; // ← لنُعيده للفرونت
+    let paxNewBalance = null;
     await session.withTransaction(async () => {
       const status = isScheduled ? 'scheduled' : 'pending';
       let commissionAmount = 0;
       let paid = false;
 
-      // خصم فوري فقط لو غير مجدولة + wallet
-      if (!isScheduled && paymentMethod === 'wallet') {
+      if (isPrechargeEnabled() && !isScheduled && paymentMethod === 'wallet') {
         const paidRes = await chargePassengerWallet({
           passengerId: user._id,
           amount: fare,
@@ -285,7 +296,7 @@ exports.createTrip = async (req, res) => {
         dropoffLocation,
         fare,
         paymentMethod,
-        commissionAmount,                 // تُخصم لاحقًا حسب السياسة
+        commissionAmount,
         isScheduled: !!isScheduled,
         scheduledDateTime: isScheduled ? new Date(scheduledDateTime) : undefined,
         status,
@@ -311,25 +322,16 @@ exports.createTrip = async (req, res) => {
   }
 };
 
-/**
- * رحلات المستخدم الحالي
- */
 exports.getTripsByUser = async (req, res) => {
   try {
     const user = req.user;
     if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
-    const {
-      page = 1,
-      limit = 20,
-      sort = '-createdAt',
-      status
-    } = req.query;
+    const { page = 1, limit = 20, sort = '-createdAt', status } = req.query;
 
     const q = {};
     if (isDriver(user)) q.driver = user._id;
     else q.passenger = user._id;
-
     if (status) q.status = status;
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -350,9 +352,6 @@ exports.getTripsByUser = async (req, res) => {
   }
 };
 
-/**
- * تحديث حالة الرحلة + الخصومات/الاستردادات وفق السياسة
- */
 exports.updateTripStatus = async (req, res) => {
   let session;
   try {
@@ -360,18 +359,16 @@ exports.updateTripStatus = async (req, res) => {
     if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
     const { id } = req.params;
-
-
     let { status } = req.body || {};
     assert(status, 'status مطلوب');
 
-    // توحيد أسماء الحالات الواردة
     const mapStatus = (s='') => {
       s = String(s).toLowerCase();
       if (['in_progress','inprogress','started','start'].includes(s)) return 'in_progress';
       if (['accepted','accept'].includes(s)) return 'accepted';
       if (['completed','complete','done'].includes(s)) return 'completed';
       if (['cancelled','canceled','cancel'].includes(s)) return 'cancelled';
+      if (['ready'].includes(s)) return 'ready';
       return s;
     };
     status = mapStatus(status);
@@ -380,19 +377,17 @@ exports.updateTripStatus = async (req, res) => {
     assert(allowed.includes(status), 'حالة غير مدعومة', 400);
 
     const trip = await Trip.findById(id);
-
     if (!trip) return res.status(404).json({ message: 'Trip not found' });
 
     const current = trip.status;
     const isTripDriver = trip.driver && String(trip.driver) === String(user._id);
     const isTripPassenger = String(trip.passenger) === String(user._id);
-    
-    // صلاحيات وانتقالات
+
     if (!isAdmin(user)) {
       if (isDriver(user)) {
         if (status === 'accepted') {
           assert(['pending','ready','scheduled'].includes(current), 'لا يمكن قبول هذه الرحلة');
-          trip.driver = user._id; // يسنِد نفسه
+          trip.driver = user._id;
         } else if (status === 'in_progress') {
           assert(current === 'accepted' && isTripDriver, 'غير مصرح ببدء الرحلة');
         } else if (status === 'completed') {
@@ -422,7 +417,8 @@ exports.updateTripStatus = async (req, res) => {
     let drvNewBalance = null;
 
     await session.withTransaction(async () => {
-      // للرحلات المجدولة + wallet: خصم عند ready/accepted (الأسبق)
+      const settings = await getActiveCommission();
+
       if (trip.isScheduled && trip.paymentMethod === 'wallet' && !trip.paid &&
           (status === 'ready' || status === 'accepted')) {
         const paidRes = await chargePassengerWallet({
@@ -436,30 +432,42 @@ exports.updateTripStatus = async (req, res) => {
         }
       }
 
-      // سجل القبول + عمولة مبكرة لو السياسة accepted
       if (status === 'accepted') {
         await TripAcceptanceLog.create([{ driverId: trip.driver || user._id, tripId: trip._id }], { session });
 
-        if (COMMISSION_CHARGE_STAGE === 'accepted' && trip.commissionAmount === 0) {
-          assert(trip.driver, 'لا يمكن خصم عمولة بدون سائق');
-          const amt = await chargeDriverCommission({ driverId: trip.driver, fare: trip.fare }, session);
-          trip.commissionAmount = amt;
+        if (settings && settings.chargeStage === 'accepted' && trip.commissionAmount === 0) {
+          if (shouldApplyCommission(trip.paymentMethod, settings)) {
+            assert(trip.driver, 'لا يمكن خصم عمولة بدون سائق');
+            const amt = await chargeDriverCommission({ driverId: trip.driver, fare: trip.fare }, session);
+            trip.commissionAmount = amt;
+          }
         }
       }
 
-      // دفع نقدي يعتبر مدفوعًا عند الإكمال
-      if (status === 'completed' && trip.paymentMethod === 'cash') {
-        trip.paid = true;
+      if (status === 'completed') {
+        if (trip.paymentMethod === 'cash') {
+          trip.paid = true;
+        } else if (trip.paymentMethod === 'wallet' && !trip.paid) {
+          const paidRes = await chargePassengerWallet({
+            passengerId: trip.passenger,
+            amount: trip.fare,
+            method: 'wallet',
+          }, session);
+          if (paidRes?.ok) {
+            trip.paid = true;
+            paxNewBalance = paidRes.newBalance;
+          }
+        }
+
+        if (settings && settings.chargeStage === 'completed' && trip.commissionAmount === 0) {
+          if (shouldApplyCommission(trip.paymentMethod, settings)) {
+            assert(trip.driver, 'لا يمكن خصم عمولة بدون سائق');
+            const amt = await chargeDriverCommission({ driverId: trip.driver, fare: trip.fare }, session);
+            trip.commissionAmount = amt;
+          }
+        }
       }
 
-      // عمولة عند الإكمال لو السياسة completed
-      if (status === 'completed' && COMMISSION_CHARGE_STAGE === 'completed' && trip.commissionAmount === 0) {
-        assert(trip.driver, 'لا يمكن خصم عمولة بدون سائق');
-        const amt = await chargeDriverCommission({ driverId: trip.driver, fare: trip.fare }, session);
-        trip.commissionAmount = amt;
-      }
-
-      // استردادات عند الإلغاء
       if (status === 'cancelled') {
         if (trip.paymentMethod === 'wallet' && trip.paid && trip.fare > 0) {
           const refundRes = await refundPassengerWallet({
@@ -475,9 +483,8 @@ exports.updateTripStatus = async (req, res) => {
         }
       }
 
-      // احسب رصيد السائق بعد أي خصم/رد عمولة
       if (trip.driver) {
-        const dWallet = await findWallet(trip.driver, session);
+        const dWallet = await findWallet(trip.driver, session) || await findWallet(trip.driver, null);
         drvNewBalance = dWallet?.balance ?? null;
       }
 
@@ -498,30 +505,23 @@ exports.updateTripStatus = async (req, res) => {
   }
 };
 
-/**
- * فلترة عامة
- */
 exports.getTripsByFilter = async (req, res) => {
   try {
     const user = req.user;
     if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
     const {
-      passengerId,
-      driverId,
-      status,
-      paymentMethod,
-      paid,
-      isScheduled,
-      fromDate,
-      toDate,
-      page = 1,
-      limit = 20,
-      sort = '-createdAt'
+      id, passengerId, driverId, status, paymentMethod, paid, isScheduled,
+      fromDate, toDate, page = 1, limit = 20, sort = '-createdAt'
     } = req.query;
 
     const q = {};
 
+    if (id) {
+      const oid = asObjectId(id);
+      assert(oid, 'id غير صالح');
+      q._id = oid;
+    }
     if (passengerId) {
       const oid = asObjectId(passengerId);
       assert(oid, 'passengerId غير صالح');
@@ -570,7 +570,7 @@ exports.getTripsByFilter = async (req, res) => {
 };
 
 exports.cancelTrip = async (req,res,next)=>{
-  try { req.body = req.body || {}; req.body.status='cancelled'; 
-        return exports.updateTripStatus(req,res,next); } 
+  try { req.body = req.body || {}; req.body.status='cancelled';
+        return exports.updateTripStatus(req,res,next); }
   catch(e){ next(e); }
 };

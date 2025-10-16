@@ -2,15 +2,11 @@
 const express = require('express');
 const router = express.Router();
 
+// كنترولرات الإدارة (بدون وظائف الشحن/العمولة هنا لتفادي الازدواج)
 const {
   // معاملات وسجلات
   getAllTransactions,
   getAcceptanceLogs,
-
-  // رموز الشحن
-  getAllRechargeCodes,
-  revertRechargeCodeByAdmin,   // ✅ تمت إضافتها من (1)
-  deleteRechargeCodeByAdmin,   // 🗑️ حذف نهائي لرمز معطّل فقط (وممنوع إن كان مستخدمًا)
 
   // المستخدمون + الإحصائيات
   getAllUsersWithWallets,
@@ -19,40 +15,24 @@ const {
   getAdminDashboardStats,
 } = require('../controllers/adminController');
 
-const {
-  getExecutedScheduledTrips,
-} = require('../controllers/adminTripController');
+const { getExecutedScheduledTrips } = require('../controllers/adminTripController');
 
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+// ✅ حارس المسؤول الموحد
+const protectAdmin = require('../middleware/adminMiddleware');
 
 // ======================= المعاملات والسجلات =======================
-router.get('/transactions', protect, adminOnly, getAllTransactions);
-router.get('/acceptance-logs', protect, adminOnly, getAcceptanceLogs);
-
-// ======================= رموز الشحن (Admin) =======================
-// عرض جميع رموز الشحن
-router.get('/recharge/all', protect, adminOnly, getAllRechargeCodes);
-
-// إلغاء استخدام رمز (يعيده غير مستخدم ويضعه معطّلاً)
-router.post('/recharge/:codeId/revert', protect, adminOnly, revertRechargeCodeByAdmin);
-
-// حذف نهائي لرمز (مسموح فقط إن كان معطّلاً وغير مستخدم)
-router.delete('/recharge/:codeId', protect, adminOnly, deleteRechargeCodeByAdmin);
+router.get('/transactions',        protectAdmin, getAllTransactions);
+router.get('/acceptance-logs',     protectAdmin, getAcceptanceLogs);
 
 // ======================= الرحلات المجدولة =======================
-router.get('/executed-scheduled-trips', protect, adminOnly, getExecutedScheduledTrips);
+router.get('/executed-scheduled-trips', protectAdmin, getExecutedScheduledTrips);
 
 // ======================= إدارة المستخدمين =======================
-// جلب كل المستخدمين (مع فلاتر الدور/الحالة + أرصدة المحافظ)
-router.get('/users', protect, adminOnly, getAllUsersWithWallets);
-
-// تفعيل/تعطيل مستخدم
-router.patch('/users/:id/toggle-activation', protect, adminOnly, toggleUserActivation);
-
-// حذف مستخدم نهائيًا
-router.delete('/users/:id', protect, adminOnly, deleteUser);
+router.get('/users',                         protectAdmin, getAllUsersWithWallets);
+router.patch('/users/:id/toggle-activation', protectAdmin, toggleUserActivation);
+router.delete('/users/:id',                  protectAdmin, deleteUser);
 
 // ======================= الإحصائيات =======================
-router.get('/dashboard/stats', protect, adminOnly, getAdminDashboardStats);
+router.get('/dashboard/stats', protectAdmin, getAdminDashboardStats);
 
 module.exports = router;

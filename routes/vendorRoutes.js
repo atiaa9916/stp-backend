@@ -9,7 +9,7 @@ const {
   getVendorDashboard
 } = require('../controllers/vendorController');
 
-const { protectVendor } = require('../middleware/vendorMiddleware');
+const protectVendor = require('../middleware/vendorMiddleware');
 
 // 🟢 تسجيل بائع جديد
 router.post('/register', registerVendor);

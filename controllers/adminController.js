@@ -1,11 +1,11 @@
 // 📂 controllers/adminController.js
 
 const Transaction = require('../models/Transaction');
-const Trip = require('../models/Trip'); // ✅ مهم جداً
+const Trip = require('../models/Trip');
 const RechargeCode = require('../models/rechargeCodeModel');
 const User = require('../models/User');
 const Wallet = require('../models/Wallet');
-const AuditLog = require('../models/AuditLog'); // ✅ لإضافة سجلات التدقيق
+const AuditLog = require('../models/AuditLog');
 
 /**
  * POST /api/admin/recharge/:codeId/revert
@@ -36,15 +36,14 @@ const revertRechargeCodeByAdmin = async (req, res) => {
       return res.status(409).json({ message: 'رصيد المستخدم لا يغطي مبلغ الإلغاء.' });
     }
 
-    // احفظ الرصيد قبل/بعد لأغراض التدقيق
     const prevBalance = wallet.balance;
 
-    // الخصم + معاملة عكسية
+    // الخصم + إنشاء معاملة عكسية (اعتمدنا الحقل المرجعي: user)
     wallet.balance -= code.amount;
     await wallet.save();
 
     await Transaction.create({
-      userId: code.usedBy,       // Transaction عندك يستخدم userId
+      user: code.usedBy,         // ← كان userId: استبدلناه بـ user
       type: 'debit',
       amount: code.amount,
       method: 'wallet',
@@ -54,14 +53,14 @@ const revertRechargeCodeByAdmin = async (req, res) => {
     // تحديث حالة الرمز
     code.isUsed = false;
     code.isDisabled = true;
-    const affectedUser = code.usedBy; // خزِّن للّوغ قبل مسحه
+    const affectedUser = code.usedBy;
     code.usedBy = null;
     code.usedAt = null;
     await code.save();
 
-    // ✅ سجل التدقيق
+    // سجل التدقيق
     await AuditLog.create({
-      actor: req.user._id, // المدير المنفّذ
+      actor: req.user._id,
       action: 'RECHARGE_REVERT',
       meta: {
         codeId: code._id.toString(),
@@ -106,7 +105,7 @@ const deleteRechargeCodeByAdmin = async (req, res) => {
     await AuditLog.create({
       actor: req.user._id,
       action: 'RECHARGE_DELETE',
-      meta: { codeId, code: code.code, amount: code.amount, reason }
+      meta: { codeId, code: code.code, amount: code.amount, reason },
     });
 
     return res.status(200).json({ message: 'تم حذف الرمز نهائيًا' });
@@ -120,7 +119,7 @@ const deleteRechargeCodeByAdmin = async (req, res) => {
 const getAllTransactions = async (req, res) => {
   try {
     const transactions = await Transaction.find({})
-      .populate('userId', 'name phoneNumber role')
+      .populate('user', 'name phone role') // ← كان userId/phoneNumber
       .populate('relatedTrip', 'pickupLocation dropoffLocation fare status')
       .sort({ createdAt: -1 });
 
@@ -131,11 +130,11 @@ const getAllTransactions = async (req, res) => {
   }
 };
 
-// 📋 عرض سجل قبول الرحلات
+// 📋 عرض سجل قبول الرحلات (تأكد من حقول Trip/driver لديك)
 const getAcceptanceLogs = async (req, res) => {
   try {
     const logs = await Trip.find({})
-      .populate('driverId', 'name phoneNumber')
+      .populate('driverId', 'name phone') // ← phoneNumber ➜ phone
       .populate('tripId', 'pickupLocation dropoffLocation fare status createdAt')
       .sort({ createdAt: -1 });
 
@@ -179,20 +178,20 @@ const getAllUsersWithWallets = async (req, res) => {
 
     const users = await User.find(filter).select('-password').sort({ createdAt: -1 });
 
-    const usersWithWallets = await Promise.all(users.map(async (user) => {
-      const wallet = await Wallet.findOne({ userId: user._id });
-      return {
-        _id: user._id,
-        name: user.name,
-        phoneNumber: user.phoneNumber,
-        role: user.role,
-        isActive: user.isActive,
-        createdAt: user.createdAt,
-        wallet: {
-          balance: wallet ? wallet.balance : 0
-        }
-      };
-    }));
+    const usersWithWallets = await Promise.all(
+      users.map(async (user) => {
+        const wallet = await Wallet.findOne({ user: user._id }); // ← كان userId
+        return {
+          _id: user._id,
+          name: user.name,
+          phone: user.phone,     // ← phoneNumber ➜ phone
+          role: user.role,
+          isActive: user.isActive,
+          createdAt: user.createdAt,
+          wallet: { balance: wallet ? wallet.balance : 0 },
+        };
+      })
+    );
 
     res.status(200).json(usersWithWallets);
   } catch (error) {
@@ -227,16 +226,17 @@ const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (req.user._id.toString() === id)
-      return res.status(400).json({ message: "لا يمكن حذف نفسك" });
+    if (req.user._id.toString() === id) {
+      return res.status(400).json({ message: 'لا يمكن حذف نفسك' });
+    }
 
     const deleted = await User.findByIdAndDelete(id);
-    if (!deleted) return res.status(404).json({ message: "المستخدم غير موجود" });
+    if (!deleted) return res.status(404).json({ message: 'المستخدم غير موجود' });
 
-    res.status(200).json({ message: "✅ تم حذف المستخدم نهائيًا" });
+    res.status(200).json({ message: '✅ تم حذف المستخدم نهائيًا' });
   } catch (error) {
-    console.error("خطأ أثناء حذف المستخدم:", error);
-    res.status(500).json({ message: "❌ فشل في حذف المستخدم" });
+    console.error('خطأ أثناء حذف المستخدم:', error);
+    res.status(500).json({ message: '❌ فشل في حذف المستخدم' });
   }
 };
 
@@ -270,23 +270,16 @@ const getAdminDashboardStats = async (req, res) => {
         active: activeUsers,
         inactive: inactiveUsers,
       },
-      wallets: {
-        totalBalance,
-      },
+      wallets: { totalBalance },
       rechargeCodes: {
         total: totalRechargeCodes,
         used: usedRechargeCodes,
         unused: unusedRechargeCodes,
         disabled: disabledRechargeCodes,
       },
-      transactions: {
-        total: totalTransactions,
-      },
-      trips: {
-        total: totalTrips,
-      }
+      transactions: { total: totalTransactions },
+      trips: { total: totalTrips },
     });
-
   } catch (error) {
     console.error('خطأ في جلب إحصائيات لوحة التحكم:', error);
     res.status(500).json({ message: 'فشل في جلب إحصائيات لوحة التحكم' });

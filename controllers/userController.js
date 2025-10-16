@@ -1,67 +1,74 @@
+// controllers/userController.js
+
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+const { createWalletForUser } = require('./walletController');
 
-// توليد توكن
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: '30d',
-  });
-};
+// توليد توكن موحّد
+const generateToken = (id) =>
+  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-// 🔐 تسجيل مستخدم باستخدام رقم الجوال فقط
+// 🔐 تسجيل مستخدم باستخدام رقم الجوال فقط (يُنشئ Passenger دائمًا)
 exports.registerUser = async (req, res) => {
-  const { name, phone, password, role } = req.body;
+  try {
+    const { name, phone, password } = req.body;
 
-  // ✅ تحقق من أن المستخدم النشط غير موجود بنفس رقم الهاتف
-  const userExists = await User.findOne({ phone, isActive: true });
-  if (userExists) {
-    return res.status(400).json({ message: 'المستخدم موجود بالفعل برقم الهاتف' });
+    // لا تسمح بتحديد الدور من العميل في المسار العام
+    const role = 'passenger';
+
+    // تحقق من عدم وجود مستخدم بنفس الرقم
+    const userExists = await User.findOne({ phone });
+    if (userExists) {
+      return res.status(400).json({ message: 'المستخدم موجود بالفعل برقم الهاتف' });
+    }
+
+    // ❗️ لا تشفّر هنا — الـ Model يقوم بالتشفير تلقائيًا (pre('save'))
+    const user = await User.create({ name, phone, password, role });
+
+    // إنشاء محفظة للمستخدم بعد التسجيل
+    try { await createWalletForUser(user._id); } catch (_) {}
+
+    res.status(201).json({
+      _id: user._id,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      token: generateToken(user._id),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'فشل إنشاء الحساب', error: err.message });
   }
-
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  const user = await User.create({
-    name,
-    phone,
-    password: hashedPassword,
-    role: role || 'passenger'
-  });
-
-  res.status(201).json({
-    _id: user._id,
-    name: user.name,
-    phone: user.phone,
-    role: user.role,
-    token: generateToken(user._id)
-  });
 };
 
 // 🔐 تسجيل الدخول باستخدام رقم الجوال
 exports.loginUser = async (req, res) => {
-  const { phone, password } = req.body;
+  try {
+    const { phone, password } = req.body;
 
-  const user = await User.findOne({ phone, isActive: true }).select('+password');
-  if (!user) {
-    return res.status(400).json({ message: 'رقم الجوال غير صحيح' });
+    // نجلب الـ password لأن الحقل select:false غالبًا
+    const user = await User.findOne({ phone }).select('+password');
+    if (!user || !(await user.matchPassword(password))) {
+      return res.status(400).json({ message: 'بيانات الدخول غير صحيحة' });
+    }
+
+    res.json({
+      _id: user._id,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      token: generateToken(user._id),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'فشل تسجيل الدخول', error: err.message });
   }
-
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) {
-    return res.status(400).json({ message: 'كلمة المرور غير صحيحة' });
-  }
-
-  res.json({
-    _id: user._id,
-    name: user.name,
-    phone: user.phone,
-    role: user.role,
-    token: generateToken(user._id)
-  });
 };
 
-// 👤 الملف الشخصي (اختياري)
+// 👤 الملف الشخصي (محمي)
 exports.getUserProfile = async (req, res) => {
-  const user = await User.findById(req.user._id).select('-password');
-  res.json(user);
+  try {
+    const user = await User.findById(req.user._id).select('-password');
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: 'فشل جلب الملف الشخصي', error: err.message });
+  }
 };

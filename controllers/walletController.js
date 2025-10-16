@@ -6,57 +6,54 @@ const Transaction = require('../models/Transaction');
 
 const CURRENCY = 'SYP';
 
-// سجل معاملة بأمان (لا يُسقط الطلب لو فشل التسجيل)
+/** يسجل معاملة بدون تعطيل المسار لو فشل السجل */
 async function logTxnSafe(doc, session) {
   try {
     const now = new Date();
     const base = { createdAt: now, updatedAt: now };
+
+    // ملاحظة: ما زلنا نكتب المعاملة على الحقل userId (توافقًا مع بقية المنظومة الحالية).
+    // إن رغبت لاحقًا توحيد Transaction إلى user أيضًا، أخبرني أعدّها كلها دفعة واحدة.
     await Transaction.create([{ ...doc, ...base, desc: doc.desc ?? doc.description }], { session });
   } catch (e) {
     console.warn('Transaction log failed:', e.message);
   }
 }
 
-// upsert محفظة + توحيد إلى userId (مع معالجة صارمة لمشكلة $unset + strict)
+/** Upsert محفظة بالحقل الموحّد user + تنظيف أي أثر قديم لـ userId */
 async function upsertWallet(uidRaw, session) {
   const uid = uidRaw instanceof mongoose.Types.ObjectId ? uidRaw : new mongoose.Types.ObjectId(uidRaw);
   const now = new Date();
 
-  // 1) upsert بدون $unset لتجنّب strict error
+  // ابحث بأي من الحقلين (توافق قديم)، وثبّت الإدراج على user فقط
   const w = await Wallet.findOneAndUpdate(
-    { $or: [{ userId: uid }, { user: uid }] },
-    {
-      $setOnInsert: { userId: uid, balance: 0, currency: CURRENCY, createdAt: now },
-      $set: { updatedAt: now },
-      // لا $unset هنا أثناء upsert
-    },
-    {
-      new: true,
-      upsert: true,
-      setDefaultsOnInsert: true,
-      strict: false,         // المهم لتفادي Path "user" is not in schema مع upsert
-      session,
-    }
+    { $or: [{ user: uid }, { userId: uid }] },           // userId دعم مؤقت للانتقال
+    { $setOnInsert: { user: uid, balance: 0, currency: CURRENCY, createdAt: now },
+      $set: { updatedAt: now } },
+    { new: true, upsert: true, setDefaultsOnInsert: true, session }
   );
 
-  // 2) بعد أن أصبحت لدينا وثيقة، احذف أي حقل قديم user إن وجد
+  // تنظيف أي userId قديم إن وجد (مرحلة انتقالية)
   try {
-    await Wallet.updateOne({ _id: w._id, user: { $exists: true } }, { $unset: { user: '' } }, { session });
+    await Wallet.updateOne(
+      { _id: w._id, userId: { $exists: true } },
+      { $unset: { userId: '' } },
+      { session }
+    );
   } catch (e) {
-    // لا نُسقط العملية: فقط تحذير
-    console.warn('Wallet cleanup (unset user) failed:', e.message);
+    console.warn('Wallet cleanup (unset userId) failed:', e.message);
   }
 
   return w;
 }
 
-// 📥 إنشاء محفظة لمستخدم (يُستدعى عند التسجيل)
+/** إنشاء محفظة عند التسجيل */
 exports.createWalletForUser = async (userId) => {
   try { await upsertWallet(userId); }
   catch (error) { console.error('❌ فشل إنشاء المحفظة:', error.message); }
 };
 
-// 📄 جلب رصيد المستخدم الحالي (نسخة نظيفة بعد التطبيع)
+/** جلب رصيد المستخدم الحالي */
 exports.getMyBalance = async (req, res) => {
   try {
     const raw = req.user?._id || req.user?.id || req.user?.userId;
@@ -66,15 +63,11 @@ exports.getMyBalance = async (req, res) => {
     try { uid = new mongoose.Types.ObjectId(raw); }
     catch { return res.status(400).json({ message: 'معرّف المستخدم غير صالح' }); }
 
-    const now = new Date();
+    // تأكيد وجود المحفظة بالحقل الموحّد
+    let w = await Wallet.findOne({ user: uid }).lean();
+    if (!w) w = await Wallet.create({ user: uid, balance: 0, currency: CURRENCY });
 
-    // تأكيد وجود المحفظة
-    let w = await Wallet.findOne({ userId: uid }).lean();
-    if (!w) {
-      w = await Wallet.create({ userId: uid, balance: 0, currency: CURRENCY });
-    }
-
-    // حساب الرصيد الدفتري من معاملات المستخدم فقط
+    // نحسب الرصيد الدفتري من جدول المعاملات (ما زال يعتمد userId حاليًا)
     const [sum = {}] = await Transaction.collection.aggregate([
       { $match: { userId: uid } },
       {
@@ -89,11 +82,11 @@ exports.getMyBalance = async (req, res) => {
 
     const ledger = Number(sum.ledger || 0);
 
-    // مزامنة المحفظة لو اختلفت
+    // مزامنة الحقل الحسابي balance مع الدفتري
     if ((Number(w.balance) || 0) !== ledger) {
       await Wallet.updateOne(
         { _id: w._id },
-        { $set: { balance: ledger, currency: w.currency || CURRENCY, updatedAt: now } }
+        { $set: { balance: ledger, currency: w.currency || CURRENCY, updatedAt: new Date() } }
       );
     }
 
@@ -104,7 +97,7 @@ exports.getMyBalance = async (req, res) => {
   }
 };
 
-// ➕ شحن الرصيد
+/** شحن الرصيد */
 exports.chargeBalance = async (req, res) => {
   try {
     const amt = Number(req.body?.amount);
@@ -122,7 +115,7 @@ exports.chargeBalance = async (req, res) => {
           { session }
         );
         await logTxnSafe(
-          { userId: w.userId, type: 'credit', amount: amt, description: 'شحن رصيد المحفظة' },
+          { userId: w.user, type: 'credit', amount: amt, description: 'شحن رصيد المحفظة' },
           session
         );
         w = await Wallet.findById(w._id).session(session);
@@ -138,10 +131,9 @@ exports.chargeBalance = async (req, res) => {
   }
 };
 
-// 📄 كشف الحركات (statement) مع ترشيح وترقيم صفحات
+/** كشف الحركات (Statement) */
 exports.getStatement = async (req, res) => {
   try {
-    // التحقق من الـ uid من نفس أسلوب الدوال الأخرى
     const raw = req.user?._id || req.user?.id || req.user?.userId;
     if (!raw) return res.status(401).json({ message: 'رمز الوصول لا يحوي معرّف مستخدم' });
 
@@ -149,52 +141,43 @@ exports.getStatement = async (req, res) => {
     try { uid = new mongoose.Types.ObjectId(raw); }
     catch { return res.status(400).json({ message: 'معرّف المستخدم غير صالح' }); }
 
-    // قراءة باراميترات الاستعلام (مع قيم افتراضية وحدود منطقية)
     const q = req.query || {};
     const limitInput = parseInt(q.limit, 10);
     const pageInput  = parseInt(q.page, 10);
 
-    const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 20, 1), 50); // 1..50
+    const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 20, 1), 50);
     const page  = Math.max(Number.isFinite(pageInput) ? pageInput : 1, 1);
     const skip  = (page - 1) * limit;
 
-    // فلترة اختيارية حسب النوع والوقت
+    // ما زالت المعاملات تعتمد userId (توافقًا)
     const match = { userId: uid };
     if (q.type === 'credit' || q.type === 'debit') match.type = q.type;
-
     if (q.before || q.after) {
       match.createdAt = {};
       if (q.before) match.createdAt.$lt = new Date(q.before);
       if (q.after)  match.createdAt.$gt = new Date(q.after);
     }
 
-    // اجلب العناصر + العدد الإجمالي بالتوازي
     const [items, total] = await Promise.all([
       Transaction.find(
         match,
-        { _id: 1, type: 1, amount: 1, createdAt: 1, desc: 1 } // Projection بسيط
+        { _id: 1, type: 1, amount: 1, createdAt: 1, desc: 1 }
       )
-      .sort({ createdAt: -1 })   // الأحدث أولاً
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-
       Transaction.countDocuments(match),
     ]);
 
-    return res.status(200).json({
-      items,
-      total,
-      page,
-      limit,
-    });
+    return res.status(200).json({ items, total, page, limit });
   } catch (err) {
     console.error('getStatement error:', err);
     return res.status(500).json({ message: 'فشل جلب كشف الحركات' });
   }
 };
 
-// 🔁 تحويل رصيد (يسمح فقط driver ↔ passenger)
+/** تحويل رصيد (driver ↔ passenger فقط) */
 exports.transferBalance = async (req, res) => {
   try {
     const senderId = req.user._id;
@@ -206,19 +189,17 @@ exports.transferBalance = async (req, res) => {
 
     const [senderUser, recipientUser] = await Promise.all([
       User.findById(senderId),
-      User.findOne({ phone: recipientPhone })
+      User.findOne({ phone: recipientPhone }),
     ]);
     if (!recipientUser)
       return res.status(404).json({ message: 'المستخدم المستلم غير موجود' });
 
-    // السماح فقط (driver→passenger | passenger→driver)
     const allowed =
       (senderUser.role === 'driver' && recipientUser.role === 'passenger') ||
       (senderUser.role === 'passenger' && recipientUser.role === 'driver');
     if (!allowed)
       return res.status(403).json({ message: `❌ التحويل غير مسموح بين ${senderUser.role} و ${recipientUser.role}` });
 
-    // حد أدنى يجب أن يبقى بعد التحويل
     const MIN_REMAINING_BALANCE = 20000;
 
     const session = await mongoose.startSession();
@@ -234,8 +215,8 @@ exports.transferBalance = async (req, res) => {
       await Wallet.updateOne({ _id: wSender._id }, { $inc: { balance: -amt }, $set: { updatedAt: new Date() } }, { session });
       await Wallet.updateOne({ _id: wRecip._id },  { $inc: { balance:  amt }, $set: { updatedAt: new Date() } }, { session });
 
-      await logTxnSafe({ userId: wSender.userId, type: 'debit',  amount: amt, description: `تحويل إلى ${recipientUser.phone}` }, session);
-      await logTxnSafe({ userId: wRecip.userId,  type: 'credit', amount: amt, description: `استلام من ${senderUser.phone}` }, session);
+      await logTxnSafe({ userId: wSender.user, type: 'debit',  amount: amt, description: `تحويل إلى ${recipientUser.phone}` }, session);
+      await logTxnSafe({ userId: wRecip.user,  type: 'credit', amount: amt, description: `استلام من ${senderUser.phone}` }, session);
 
       senderWallet = await Wallet.findById(wSender._id).session(session);
     });

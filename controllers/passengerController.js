@@ -1,49 +1,40 @@
-const bcrypt = require('bcryptjs');
+//controllers/passengerController.js
+
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { createWalletForUser } = require('./walletController'); // ✅ لإنشاء محفظة تلقائيًا
+const { createWalletForUser } = require('./walletController'); // لإنشاء محفظة تلقائيًا
 
-// 🔐 إنشاء توكن
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: '30d',
-  });
-};
+const generateToken = (id) =>
+  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
 // 🟢 تسجيل حساب راكب جديد
 const registerPassenger = async (req, res) => {
   try {
     const { name, phone, password } = req.body;
 
-    const existingUser = await User.findOne({ phone });
-    if (existingUser) {
+    const existing = await User.findOne({ phone });
+    if (existing) {
       return res.status(400).json({ message: 'رقم الجوال مستخدم مسبقًا' });
     }
 
-    // ⛔️ لا نقوم بالتشفير يدويًا هنا
-    const newPassenger = await User.create({
+    // ❗️ لا تشفّر يدويًا — Model يقوم بالتشفير
+    const passenger = await User.create({
       name,
       phone,
-      password, // ❗ سيتم تشفيره تلقائيًا في model
+      password,
       role: 'passenger',
-      isActive: true
+      isActive: true,
     });
 
-    await createWalletForUser(newPassenger._id); // ✅ إنشاء محفظة تلقائيًا
-
-    const token = generateToken(newPassenger._id);
+    try { await createWalletForUser(passenger._id); } catch (_) {}
 
     res.status(201).json({
-      message: 'تم إنشاء الحساب بنجاح',
-      token,
-      user: {
-        id: newPassenger._id,
-        name: newPassenger.name,
-        phone: newPassenger.phone,
-        role: newPassenger.role,
-      }
+      _id: passenger._id,
+      name: passenger.name,
+      phone: passenger.phone,
+      role: passenger.role,
+      token: generateToken(passenger._id),
     });
-
   } catch (error) {
     res.status(500).json({ message: 'فشل تسجيل الحساب', error: error.message });
   }
@@ -55,28 +46,17 @@ const loginPassenger = async (req, res) => {
     const { phone, password } = req.body;
 
     const user = await User.findOne({ phone, role: 'passenger' }).select('+password');
-    if (!user) {
+    if (!user || !(await user.matchPassword(password))) {
       return res.status(400).json({ message: 'بيانات الدخول غير صحيحة' });
     }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'بيانات الدخول غير صحيحة' });
-    }
-
-    const token = generateToken(user._id);
 
     res.status(200).json({
-      message: 'تم تسجيل الدخول بنجاح',
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        phone: user.phone,
-        role: user.role,
-      }
+      _id: user._id,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      token: generateToken(user._id),
     });
-
   } catch (error) {
     res.status(500).json({ message: 'فشل تسجيل الدخول', error: error.message });
   }
@@ -92,7 +72,7 @@ const getPassengerDashboard = async (req, res) => {
         name: req.user.name,
         phone: req.user.phone,
         role: req.user.role,
-      }
+      },
     });
   } catch (error) {
     res.status(500).json({ message: 'فشل عرض لوحة التحكم', error: error.message });
@@ -117,5 +97,5 @@ module.exports = {
   registerPassenger,
   loginPassenger,
   getPassengerDashboard,
-  getPassengerProfile
+  getPassengerProfile,
 };

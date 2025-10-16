@@ -10,7 +10,7 @@ const {
   getPassengerDashboard // ✅ إضافة لوحة التحكم
 } = require('../controllers/passengerController');
 
-const { protectPassenger } = require('../middleware/passengerMiddleware');
+const protectPassenger = require('../middleware/passengerMiddleware');
 
 // 🟢 تسجيل راكب جديد
 router.post('/register', registerPassenger);

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const { getDriverDashboard } = require('../controllers/driverController');
-const { protectDriver } = require('../middleware/driverMiddleware');
+const protectDriver = require('../middleware/driverMiddleware');
 const { registerDriver, loginDriver } = require('../controllers/driverAuthController'); // ✅ استدعاء موحد
 
 // 📊 لوحة تحكم السائق
