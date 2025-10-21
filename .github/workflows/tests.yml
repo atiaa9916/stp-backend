@@ -4,6 +4,9 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # مطلوب لـ codecov/codecov-action@v4
+
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +36,7 @@ jobs:
       - name: List Jest tests
         run: npx jest --listTests
 
-      # ✅ شغّل سكرِبت التغطية
+      # ✅ شغّل سكرِبت التغطية (يولّد coverage/ بما فيها lcov.info)
       - name: Run coverage
         run: npm run coverage
 
@@ -50,6 +53,7 @@ jobs:
       # ☁️ Codecov: ارفع lcov فقط؛ لا تُسقِط الـ CI إذا فشل الرفع
       - name: Upload coverage to Codecov
         if: always()
+        continue-on-error: true
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }} # اتركه فارغًا لو المستودع عام
