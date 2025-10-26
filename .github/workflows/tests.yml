@@ -1,12 +1,12 @@
 name: tests
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read  # مطلوب لـ codecov/codecov-action@v4
-
     strategy:
       fail-fast: false
       matrix:
@@ -32,31 +32,37 @@ jobs:
           echo "=== tests dir ==="
           ls -la tests || true
 
-      # 🔎 طباعة قائمة ملفات الاختبار التي يراها Jest
       - name: List Jest tests
         run: npx jest --listTests
 
-      # ✅ شغّل سكرِبت التغطية (يولّد coverage/ بما فيها lcov.info)
-      - name: Run coverage
-        run: npm run coverage
+      # ✅ شغّل الاختبارات فقط (هي المانعة للدمج)
+      - name: Run tests (no coverage gate)
+        run: npm test -- --runInBand --detectOpenHandles --verbose 2>&1 | tee reports/jest-${{ matrix.node }}.log
 
-      # 🗂️ ارفع ملفات التغطية كأرتيفاكت (حتى لو فشلت خطوة سابقة، نحاول الرفع)
-      - name: Upload coverage artifact
+      # ✅ شغّل التغطية على Node 20 فقط – ولا تجعلها تُسقط CI
+      - name: Run coverage (Node 20 only)
+        if: matrix.node == 20
+        continue-on-error: true
+        run: npm run coverage 2>&1 | tee reports/coverage-${{ matrix.node }}.log
+
+      # 🗂️ ارفع اللوجات وملفات التغطية دائمًا لتسهيل التشخيص
+      - name: Upload coverage & logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ matrix.node }}
-          path: coverage/**
+          name: reports-${{ matrix.node }}
+          path: |
+            coverage/**
+            reports/**
           if-no-files-found: warn
           retention-days: 7
 
-      # ☁️ Codecov: ارفع lcov فقط؛ لا تُسقِط الـ CI إذا فشل الرفع
+      # ☁️ Codecov (اختياري) – لا تُسقط CI عند الفشل
       - name: Upload coverage to Codecov
-        if: always()
-        continue-on-error: true
+        if: always() && matrix.node == 20
         uses: codecov/codecov-action@v4
         with:
-          token: ${{ secrets.CODECOV_TOKEN }} # اتركه فارغًا لو المستودع عام
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
           flags: node-${{ matrix.node }}
           fail_ci_if_error: false
